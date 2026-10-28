@@ -2,8 +2,14 @@ name: Weekly Kindle EPUB
 
 on:
   schedule:
-    - cron: "0 2 * * 1"
+    - cron: '0 2 * * 1'
   workflow_dispatch:
+    inputs:
+      concurrency:
+        description: How many posts to download at once. Image downloads share this limit.
+        required: false
+        type: number
+        default: 4
 
 permissions:
   contents: write
@@ -16,7 +22,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     env:
-      PYTHONUNBUFFERED: "1"
+      PYTHONUNBUFFERED: '1'
     steps:
       - name: Free disk space
         run: |
@@ -32,13 +38,15 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: '3.12'
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
       - name: Sync posts
-        run: python sync.py --concurrency 16
+        env:
+          CONCURRENCY: ${{ inputs.concurrency || 4 }}
+        run: python sync.py --concurrency "$CONCURRENCY"
 
       - name: Build Kindle EPUB
         run: python build.py --images kindle | tee build.log
