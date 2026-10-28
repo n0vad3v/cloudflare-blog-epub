@@ -1,0 +1,72 @@
+name: Weekly Kindle EPUB
+
+on:
+  schedule:
+    - cron: "0 2 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: weekly-epub
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL
+          df -h
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Sync posts
+        run: python sync.py --concurrency 16
+
+      - name: Build Kindle EPUB
+        run: python build.py --images kindle | tee build.log
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          stats=$(sed -n 's/^wrote .* (\(.*\))$/\1/p' build.log | tail -n 1)
+          if [ -z "$stats" ]; then
+            echo "build log has no wrote line" >&2
+            exit 1
+          fi
+          sha256sum cloudflare-blog-kindle.epub > SHA256SUMS
+          tag="epub-$(date -u +%F)"
+          title="Cloudflare Blog Kindle EPUB ${tag#epub-}"
+          printf '%s\n' \
+            "Kindle EPUB of the English Cloudflare Blog." \
+            "" \
+            "$stats" \
+            "Commit: ${GITHUB_SHA}" \
+            > release-notes.txt
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" cloudflare-blog-kindle.epub SHA256SUMS --clobber
+            gh release edit "$tag" --title "$title" --notes-file release-notes.txt --latest
+          else
+            gh release create "$tag" cloudflare-blog-kindle.epub SHA256SUMS \
+              --title "$title" \
+              --notes-file release-notes.txt \
+              --latest
+          fi
