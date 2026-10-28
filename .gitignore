@@ -1,0 +1,9 @@
+data/
+build/
+*.epub
+.venv/
+.vendor/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.tmp
