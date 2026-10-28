@@ -55,6 +55,7 @@ def sync_posts(
     ]
     _refresh_taxonomy(catalog, tag_slugs)
     _save_catalog(catalog)
+    saved = len(list(posts_dir().glob("*.json")))
     if failures:
         atomic_write_text(
             catalog_path().parent / "failures.json",
@@ -63,8 +64,13 @@ def sync_posts(
         print(f"failed {len(failures)}")
         for item in failures:
             print(f"  {item['slug']}: {item['error']}")
-        return 1
-    print(f"synced {len(entries)} listed, {len(list(posts_dir().glob('*.json')))} saved")
+        # A handful of timed-out posts should not discard the edition.
+        # A run that saved little of the sitemap still fails.
+        if not entries or saved < len(entries) * 0.95:
+            return 1
+        print(f"synced {len(entries)} listed, {saved} saved, {len(failures)} skipped")
+        return 0
+    print(f"synced {len(entries)} listed, {saved} saved")
     return 0
 
 
@@ -179,6 +185,11 @@ def _entry_for_slug(by_slug: dict[str, PostEntry], raw: str) -> PostEntry | None
     return entry
 
 
+def _unfetched_images(names: list[str], got: dict, absent: list[str]) -> list[str]:
+    skipped = set(absent)
+    return [name for name in dict.fromkeys(names) if name not in got and name not in skipped]
+
+
 def _article_html(page: str) -> bool:
     lowered = page.lower()
     return "article-content" in lowered and "<h1" in lowered
@@ -245,13 +256,14 @@ async def _fetch_all(entries: list[PostEntry], concurrency: int) -> list[dict[st
                             json.dumps(post, ensure_ascii=False, indent=2),
                         )
                         names = list(post.get("images") or [])
+                        absent: list[str] = []
                         try:
-                            got = await asyncio.to_thread(ensure_images, names)
+                            got = await asyncio.to_thread(ensure_images, names, absent=absent)
                         except Exception as exc:
                             failures.append({"slug": entry.slug, "error": f"images: {exc}"})
                             tqdm.write(f"images failed {entry.slug}: {exc}")
                             return
-                        missing = [name for name in names if name not in got]
+                        missing = _unfetched_images(names, got, absent)
                         if missing:
                             failures.append({"slug": entry.slug, "error": f"{len(missing)} images failed"})
                             tqdm.write(f"images incomplete {entry.slug}: {len(missing)}/{len(names)}")
@@ -286,13 +298,14 @@ def _backfill_images(entries: list[PostEntry]) -> list[dict[str, str]]:
     if not unique:
         return []
     print(f"images for {len(entries)} saved posts: {len(unique)} files")
+    absent: list[str] = []
     try:
         with tqdm(total=len(unique), desc="images", unit="img", disable=None) as bar:
-            got = ensure_images(unique, progress=bar)
+            got = ensure_images(unique, progress=bar, absent=absent)
     except Exception as exc:
         print(f"images failed: {exc}")
         return [{"slug": owner.get(name, name), "error": f"image {name}: {exc}"} for name in unique]
-    missing = [name for name in unique if name not in got]
+    missing = _unfetched_images(unique, got, absent)
     if missing:
         print(f"images failed {len(missing)}")
     else:

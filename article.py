@@ -15,6 +15,11 @@ SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 # (the post cf-ui), so this is only applied when another segment follows.
 LOCALE_RE = re.compile(r"^[a-z]{2}-[a-z]{2}$")
 MEDIA_RE = re.compile(r"/_emdash/api/media/file/([^/?#&\s]+)", re.IGNORECASE)
+# Emdash stores each file under a ULID, with an optional image extension.
+MEDIA_NAME_RE = re.compile(
+    r"^(?P<id>[0-9A-HJKMNP-TV-Z]{26})(?:\.(?P<ext>gif|png|jpe?g|webp|svg|avif))?$",
+    re.IGNORECASE,
+)
 ILLEGAL_XML = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\uD800-\uDFFF]")
 DROP_TAGS = {
     "script",
@@ -103,14 +108,22 @@ def post_slug_from_href(href: str, known_posts: set[str]) -> str | None:
 def media_filename(value: str | None) -> str | None:
     if not value:
         return None
-    decoded = unquote(unescape(value))
+    decoded = unescape(value)
+    for _ in range(2):
+        unpacked = unquote(decoded)
+        if unpacked == decoded:
+            break
+        decoded = unpacked
     match = MEDIA_RE.search(decoded)
     if not match:
         return None
-    name = match.group(1).strip()
-    if not name or "/" in name or name in {".", ".."}:
+    found = MEDIA_NAME_RE.fullmatch(match.group(1).strip().strip("\"'"))
+    if found is None:
         return None
-    return name
+    extension = found.group("ext")
+    if not extension:
+        return found.group("id")
+    return f"{found.group('id')}.{extension.lower()}"
 
 
 def media_url(filename: str) -> str:

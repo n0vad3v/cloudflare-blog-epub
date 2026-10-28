@@ -12,6 +12,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 
+import httpx
 from PIL import Image, ImageOps, UnidentifiedImageError
 from tqdm import tqdm
 
@@ -21,6 +22,7 @@ from paths import atomic_write_bytes, atomic_write_text, image_manifest_path, im
 
 MAX_EDGE = 1400
 MAX_BYTES = 40_000_000
+_HARD_BYTES = 120_000_000
 _IMAGE_ATTEMPTS = 3
 _DATA_IMAGE_RE = re.compile(
     rb"\Adata:image/[a-zA-Z0-9.+-]+;base64,(?P<payload>[A-Za-z0-9+/=\r\n]+)(?:_[A-Za-z0-9]+)?\Z"
@@ -61,11 +63,21 @@ def cached_images(names: list[str]) -> dict[str, dict]:
     return found
 
 
-def ensure_images(names: list[str], *, progress: tqdm | None = None) -> dict[str, dict]:
+class _ImageGone(Exception):
+    """The media URL is a stable 404. Retrying will not bring it back."""
+
+
+def ensure_images(
+    names: list[str],
+    *,
+    progress: tqdm | None = None,
+    absent: list[str] | None = None,
+) -> dict[str, dict]:
     """Download any missing media and return the entries now on disk.
 
     Files are cached under data/images. A name missing from the result failed
-    to download. When progress is set, it advances once per requested name.
+    to download. Names appended to absent are stable 404s and are not failures.
+    When progress is set, it advances once per requested name.
     """
     unique = list(dict.fromkeys(names))
     found: dict[str, dict] = {}
@@ -94,6 +106,11 @@ def ensure_images(names: list[str], *, progress: tqdm | None = None) -> dict[str
             name = futures[future]
             try:
                 entry = future.result()
+            except _ImageGone:
+                tqdm.write(f"image missing {name}")
+                if absent is not None:
+                    absent.append(name)
+                entry = None
             except Exception as exc:
                 tqdm.write(f"image failed {name}: {exc}")
                 entry = None
@@ -142,9 +159,13 @@ def _fetch_image(name: str) -> dict | None:
             if "text/html" in content_type or "application/json" in content_type:
                 raise RuntimeError(f"unexpected content-type {content_type}")
             data = _image_bytes(response.content)
-            if len(data) > MAX_BYTES:
+            if len(data) > _HARD_BYTES:
                 raise RuntimeError(f"image is {len(data)} bytes")
             blob, stored, media_type, width, height = _encode(name, data)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise _ImageGone from None
+            raise
         except (OSError, RuntimeError) as exc:
             last_error = str(exc)
             if attempt + 1 >= _IMAGE_ATTEMPTS or not _retryable_image_error(exc):
@@ -175,6 +196,7 @@ def _retryable_image_error(exc: Exception) -> bool:
         "truncated" in message
         or message == "unrecognized image"
         or message.startswith("unexpected content-type")
+        or "http 429" in message
     )
 
 
@@ -190,9 +212,11 @@ def _encode(name: str, data: bytes) -> tuple[bytes, str, str, int, int]:
         raise RuntimeError("unrecognized image") from None
 
     frames = getattr(image, "n_frames", 1) or 1
-    if image.format == "GIF" and frames > 1:
+    if image.format == "GIF" and frames > 1 and len(data) <= MAX_BYTES:
         width, height = image.size
         return data, _with_ext(name, ".gif"), "image/gif", width, height
+    if image.format == "GIF" and frames > 1:
+        image.seek(0)
 
     image = ImageOps.exif_transpose(image) or image
     image.load()
