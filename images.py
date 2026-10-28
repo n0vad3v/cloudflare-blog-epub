@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import json
+import re
 import threading
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
@@ -18,6 +21,10 @@ from paths import atomic_write_bytes, atomic_write_text, image_manifest_path, im
 
 MAX_EDGE = 1400
 MAX_BYTES = 40_000_000
+_IMAGE_ATTEMPTS = 3
+_DATA_IMAGE_RE = re.compile(
+    rb"\Adata:image/[a-zA-Z0-9.+-]+;base64,(?P<payload>[A-Za-z0-9+/=\r\n]+)(?:_[A-Za-z0-9]+)?\Z"
+)
 Image.MAX_IMAGE_PIXELS = 120_000_000
 _MANIFEST_LOCK = threading.Lock()
 _EXECUTOR: ThreadPoolExecutor | None = None
@@ -126,22 +133,49 @@ def _save_manifest(manifest: dict[str, dict]) -> None:
 
 
 def _fetch_image(name: str) -> dict | None:
-    with client() as http:
-        response = get(http, media_url(name))
-    content_type = response.headers.get("content-type", "")
-    if "text/html" in content_type or "application/json" in content_type:
-        raise RuntimeError(f"unexpected content-type {content_type}")
-    data = response.content
-    if len(data) > MAX_BYTES:
-        raise RuntimeError(f"image is {len(data)} bytes")
-    blob, stored, media_type, width, height = _encode(name, data)
-    atomic_write_bytes(images_dir() / stored, blob)
-    return {
-        "file": stored,
-        "media_type": media_type,
-        "width": width,
-        "height": height,
-    }
+    last_error = "image failed"
+    for attempt in range(_IMAGE_ATTEMPTS):
+        try:
+            with client() as http:
+                response = get(http, media_url(name))
+            content_type = response.headers.get("content-type", "")
+            if "text/html" in content_type or "application/json" in content_type:
+                raise RuntimeError(f"unexpected content-type {content_type}")
+            data = _image_bytes(response.content)
+            if len(data) > MAX_BYTES:
+                raise RuntimeError(f"image is {len(data)} bytes")
+            blob, stored, media_type, width, height = _encode(name, data)
+        except (OSError, RuntimeError) as exc:
+            last_error = str(exc)
+            if attempt + 1 >= _IMAGE_ATTEMPTS or not _retryable_image_error(exc):
+                raise
+            time.sleep(1.2 * (attempt + 1))
+            continue
+        atomic_write_bytes(images_dir() / stored, blob)
+        return {
+            "file": stored,
+            "media_type": media_type,
+            "width": width,
+            "height": height,
+        }
+    raise RuntimeError(last_error)
+
+
+def _image_bytes(data: bytes) -> bytes:
+    """Return image bytes. Some media files are a base64 data URL plus a variant suffix."""
+    match = _DATA_IMAGE_RE.fullmatch(data.strip())
+    if match is None:
+        return data
+    return base64.b64decode(match.group("payload"))
+
+
+def _retryable_image_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "truncated" in message
+        or message == "unrecognized image"
+        or message.startswith("unexpected content-type")
+    )
 
 
 def _encode(name: str, data: bytes) -> tuple[bytes, str, str, int, int]:

@@ -179,6 +179,11 @@ def _entry_for_slug(by_slug: dict[str, PostEntry], raw: str) -> PostEntry | None
     return entry
 
 
+def _article_html(page: str) -> bool:
+    lowered = page.lower()
+    return "article-content" in lowered and "<h1" in lowered
+
+
 def _needs_fetch(entry: PostEntry) -> bool:
     raw_path = raw_dir() / f"{entry.slug}.html"
     json_path = posts_dir() / f"{entry.slug}.json"
@@ -203,17 +208,36 @@ async def _fetch_all(entries: list[PostEntry], concurrency: int) -> list[dict[st
                 async with semaphore:
                     try:
                         try:
-                            page = await get_text(http, entry.url)
+                            page = ""
+                            post = None
+                            for attempt in range(3):
+                                try:
+                                    page = await get_text(http, entry.url)
+                                    if not _article_html(page):
+                                        raise article.ParseError(
+                                            f"{entry.slug}: missing article heading or body"
+                                        )
+                                    post = await asyncio.to_thread(
+                                        article.parse_post,
+                                        page,
+                                        slug=entry.slug,
+                                        url=entry.url,
+                                        lastmod=entry.lastmod,
+                                    )
+                                except Exception as exc:
+                                    if attempt == 2:
+                                        raise
+                                    tqdm.write(f"retry {entry.slug}: {exc}")
+                                    await asyncio.sleep(1.2 * (attempt + 1))
+                                    continue
+                                break
+                            if post is None:
+                                raise article.ParseError(
+                                    f"{entry.slug}: missing article heading or body"
+                                )
                             atomic_write_text(raw_dir() / f"{entry.slug}.html", page)
-                            post = await asyncio.to_thread(
-                                article.parse_post,
-                                page,
-                                slug=entry.slug,
-                                url=entry.url,
-                                lastmod=entry.lastmod,
-                            )
                         except Exception as exc:
-                            failures.append({"slug": entry.slug, "error": str(exc)})
+                            failures.append({"slug": entry.slug, "error": str(exc) or type(exc).__name__})
                             tqdm.write(f"failed {entry.slug}: {exc}")
                             return
                         atomic_write_text(

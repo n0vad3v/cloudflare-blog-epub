@@ -35,13 +35,19 @@ def async_client(*, connections: int = 8) -> httpx.AsyncClient:
     )
 
 
+def _error_text(exc: BaseException) -> str:
+    detail = str(exc).strip()
+    name = type(exc).__name__
+    return f"{name}: {detail}" if detail else name
+
+
 def get(http: httpx.Client, url: str) -> httpx.Response:
     last_error = "request failed"
     for attempt in range(4):
         try:
             response = http.get(url)
         except httpx.HTTPError as exc:
-            last_error = str(exc)
+            last_error = _error_text(exc)
         else:
             if response.status_code in RETRY_STATUS:
                 last_error = f"HTTP {response.status_code}"
@@ -58,7 +64,7 @@ async def get_text(http: httpx.AsyncClient, url: str) -> str:
         try:
             response = await http.get(url)
         except httpx.HTTPError as exc:
-            last_error = str(exc)
+            last_error = _error_text(exc)
         else:
             if response.status_code in RETRY_STATUS:
                 last_error = f"HTTP {response.status_code}"
