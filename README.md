@@ -185,3 +185,11 @@ These paths are gitignored.
 - The full book, with images, is large.(~3 GB) Use `python build.py --limit` or `--images kindle` when a reader cannot open it. A Kindle still does best with smaller volumes; one file of several thousand chapters is heavy even after JPEG compression.
 - Video and embedded pages become links to the original URL.
 - Code blocks keep their text and drop the site’s highlighting scripts.
+
+## AI involvement
+
+Much of the coding work is done by AI.(Cusor Grok 4.7 High).
+
+## License
+
+The scripts and original documentation are [MIT](LICENSE). Blog posts, images, trademarks, and generated EPUBs are not. See [CONTENT-NOTICE.md](CONTENT-NOTICE.md).
