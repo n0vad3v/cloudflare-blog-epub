@@ -188,7 +188,7 @@ These paths are gitignored.
 
 ## AI involvement
 
-Much of the coding work is done by AI.(Cusor Grok 4.7 High).
+Much of the coding work is done by AI.(Cursor Grok 4.7 High).
 
 ## License
 
