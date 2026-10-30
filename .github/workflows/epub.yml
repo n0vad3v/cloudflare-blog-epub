@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       concurrency:
-        description: How many posts to download at once. Image downloads share this limit.
+        description: How many posts to download at once. Images also download this many at once.
         required: false
         type: number
         default: 4
@@ -43,6 +43,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # Keep posts and images from the last run so sync only fetches what changed.
+      - name: Restore data cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: epub-data-${{ github.run_id }}
+          restore-keys: epub-data-
+
       - name: Sync posts
         env:
           CONCURRENCY: ${{ inputs.concurrency || 4 }}
@@ -50,6 +58,14 @@ jobs:
 
       - name: Build Kindle EPUB
         run: python build.py --images kindle | tee build.log
+
+      # Save even after a failed sync, so the next run resumes instead of starting over.
+      - name: Save data cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: epub-data-${{ github.run_id }}
 
       - name: Publish release
         env:
