@@ -7,6 +7,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 
+import httpx
 from lxml import etree
 from tqdm import tqdm
 
@@ -68,8 +69,12 @@ def sync_posts(
         for item in failures:
             print(f"  {item['slug']}: {item['error']}")
         # A handful of timed-out posts should not discard the edition.
-        # A run that saved little of the sitemap still fails.
-        if not entries or saved < len(entries) * 0.95:
+        # A run that saved little of what it selected still fails.
+        selected = [*to_fetch, *already]
+        saved_selected = sum(
+            1 for entry in selected if (posts_dir() / f"{entry.slug}.json").is_file()
+        )
+        if not entries or saved_selected < len(selected) * 0.95:
             return 1
         print(f"synced {len(entries)} listed, {saved} saved, {len(failures)} skipped")
         return 0
@@ -248,6 +253,9 @@ async def _fetch_all(entries: list[PostEntry], concurrency: int) -> list[dict[st
                                         url=entry.url,
                                         lastmod=entry.lastmod,
                                     )
+                                except (RuntimeError, httpx.HTTPStatusError):
+                                    # get_text already retried the request.
+                                    raise
                                 except Exception as exc:
                                     if attempt == 2:
                                         raise
@@ -382,7 +390,7 @@ def main(argv: list[str] | None = None) -> int:
         "--concurrency",
         type=_positive_int,
         default=4,
-        help="how many posts to download at once; image downloads share this limit",
+        help="how many posts to download at once; images also download this many at once, so up to twice this many requests can run together",
     )
     args = parser.parse_args(argv)
     return sync_posts(

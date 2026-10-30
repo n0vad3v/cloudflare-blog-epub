@@ -30,26 +30,32 @@ _DATA_IMAGE_RE = re.compile(
 Image.MAX_IMAGE_PIXELS = 120_000_000
 _MANIFEST_LOCK = threading.Lock()
 _EXECUTOR: ThreadPoolExecutor | None = None
+_HTTP: httpx.Client | None = None
 _WORKERS = 4
 
 
 @contextmanager
 def download_pool(workers: int) -> Iterator[None]:
-    """Share one image-download pool for the duration of a sync."""
-    global _EXECUTOR, _WORKERS
+    """Share one image-download pool and HTTP client for the duration of a sync."""
+    global _EXECUTOR, _HTTP, _WORKERS
     if workers < 1:
         raise ValueError("concurrency must be at least 1")
     executor = ThreadPoolExecutor(max_workers=workers)
+    http = client()
     previous_executor = _EXECUTOR
+    previous_http = _HTTP
     previous_workers = _WORKERS
     _EXECUTOR = executor
+    _HTTP = http
     _WORKERS = workers
     try:
         yield
     finally:
         _EXECUTOR = previous_executor
+        _HTTP = previous_http
         _WORKERS = previous_workers
         executor.shutdown(wait=True)
+        http.close()
 
 
 def cached_images(names: list[str]) -> dict[str, dict]:
@@ -96,12 +102,16 @@ def ensure_images(
         return found
 
     pool = _EXECUTOR
+    http = _HTTP
     own_pool = pool is None
+    own_http = http is None
     if pool is None:
         pool = ThreadPoolExecutor(max_workers=_WORKERS)
+    if http is None:
+        http = client()
     new_entries: dict[str, dict] = {}
     try:
-        futures = {pool.submit(_fetch_image, name): name for name in needed}
+        futures = {pool.submit(_fetch_image, http, name): name for name in needed}
         for future in as_completed(futures):
             name = futures[future]
             try:
@@ -121,6 +131,8 @@ def ensure_images(
     finally:
         if own_pool:
             pool.shutdown(wait=True)
+        if own_http:
+            http.close()
 
     with _MANIFEST_LOCK:
         manifest = _load_manifest()
@@ -149,12 +161,11 @@ def _save_manifest(manifest: dict[str, dict]) -> None:
     atomic_write_text(image_manifest_path(), json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
 
 
-def _fetch_image(name: str) -> dict | None:
+def _fetch_image(http: httpx.Client, name: str) -> dict | None:
     last_error = "image failed"
     for attempt in range(_IMAGE_ATTEMPTS):
         try:
-            with client() as http:
-                response = get(http, media_url(name))
+            response = get(http, media_url(name))
             content_type = response.headers.get("content-type", "")
             if "text/html" in content_type or "application/json" in content_type:
                 raise RuntimeError(f"unexpected content-type {content_type}")
@@ -196,7 +207,6 @@ def _retryable_image_error(exc: Exception) -> bool:
         "truncated" in message
         or message == "unrecognized image"
         or message.startswith("unexpected content-type")
-        or "http 429" in message
     )
 
 

@@ -64,7 +64,7 @@ python build.py
 
 A full archive is a few thousand posts plus images, so the first sync takes a while. Progress is printed for the sitemap, missing images, and posts. Run `python sync.py` again after an interrupt; finished posts are skipped.
 
-Downloads run four at a time. Post fetches and image fetches share that limit:
+Posts download four at a time, and images four at a time alongside them, so up to eight requests can run together:
 
 ```bash
 python sync.py --concurrency 8
