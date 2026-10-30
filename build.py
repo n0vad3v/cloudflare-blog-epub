@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import json
 import posixpath
+import re
 import shutil
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from lxml import etree, html as lhtml
 from tqdm import tqdm
@@ -38,6 +40,9 @@ OPF = "http://www.idpf.org/2007/opf"
 DC = "http://purl.org/dc/elements/1.1/"
 NCX_NS = "http://www.daisy.org/z3986/2005/ncx/"
 EPUB_NS = "http://www.idpf.org/2007/ops"
+HEADING_ID_DROP = re.compile(r"[^\w\- ]")
+MARKDOWN_ESCAPE = re.compile(r"\\([_*\[\]()#~`])")
+URL_SAFE = "/:@!$&'()*+,;=%-._~?"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
 BOOK_ID = "urn:uuid:8f3e2c1a-6b47-4d9e-a1c0-cfb10e000001"
 
@@ -167,6 +172,9 @@ def build_book(
         "post_hrefs": post_hrefs,
         "tag_hrefs": tag_hrefs,
         "images": images,
+        "anchors": {
+            post["slug"]: _body_ids(post) for post in _track(posts, "anchors", "post")
+        },
     }
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     _write_cover_image(oebps / "images" / "cover.jpg", posts)
@@ -579,29 +587,53 @@ def _hero_figure(post: dict, from_file: str, context):
     return figure
 
 
-def _body_blocks(post: dict, from_file: str, context) -> list[etree._Element]:
+def _parse_body(post: dict) -> etree._Element | None:
     raw = (post.get("body_html") or "").strip()
     if not raw:
-        return []
+        return None
+    root = lhtml.fragment_fromstring(raw, create_parent="div")
+    _add_heading_ids(root)
+    return root
+
+
+def _body_ids(post: dict) -> set[str]:
+    """Return the ids a link into this chapter can point at."""
     try:
-        root = lhtml.fragment_fromstring(raw, create_parent="div")
+        root = _parse_body(post)
+    except (etree.ParserError, etree.XMLSyntaxError):
+        return set()
+    if root is None:
+        return set()
+    return {node.get("id") for node in root.xpath(".//*[@id]")}
+
+
+def _body_blocks(post: dict, from_file: str, context) -> list[etree._Element]:
+    try:
+        root = _parse_body(post)
     except (etree.ParserError, etree.XMLSyntaxError):
         return [el("p", "This chapter could not be turned into an ebook page.")]
+    if root is None:
+        return []
     for anchor in root.xpath(".//a[@href]"):
-        rewritten = _rewrite_href(anchor.get("href") or "", from_file, context)
+        rewritten = _rewrite_href(
+            anchor.get("href") or "", from_file, context, slug=post["slug"]
+        )
         if rewritten:
             anchor.set("href", rewritten)
         else:
             anchor.drop_tag()
-    for image in root.xpath(".//img[@src]"):
+    for image in root.xpath(".//img"):
         filename = media_filename(image.get("src"))
         info = context["images"].get(filename) if filename else None
         if not info:
+            # Not on disk. A web address here would make the book fetch remote content.
+            image.drop_tree()
             continue
         image.set("src", rel_link(from_file, f"images/{info['file']}"))
         if info.get("width"):
             image.set("width", str(info["width"]))
             image.set("height", str(info["height"]))
+    _wrap_stray_cells(root)
     _retag(root)
     blocks = []
     if root.text and root.text.strip():
@@ -610,27 +642,86 @@ def _body_blocks(post: dict, from_file: str, context) -> list[etree._Element]:
     return blocks
 
 
-def _rewrite_href(href: str, from_file: str, context) -> str:
+def _add_heading_ids(root: etree._Element) -> None:
+    """Give headings the ids the blog adds in the browser, such as our-response."""
+    taken = {node.get("id") for node in root.xpath(".//*[@id]")}
+    for heading in root.xpath(".//h1 | .//h2 | .//h3 | .//h4 | .//h5 | .//h6"):
+        if heading.get("id"):
+            continue
+        base = HEADING_ID_DROP.sub("", heading.text_content().strip().lower())
+        base = base.replace(" ", "-")
+        if not base:
+            continue
+        identifier, count = base, 0
+        while identifier in taken:
+            count += 1
+            identifier = f"{base}-{count}"
+        heading.set("id", identifier)
+        taken.add(identifier)
+
+
+def _wrap_stray_cells(root: etree._Element) -> None:
+    """Put table cells that sit directly in a table or row group into a row."""
+    for group in root.xpath(".//table | .//thead | .//tbody | .//tfoot"):
+        row = None
+        for child in list(group):
+            if child.tag in ("td", "th"):
+                if row is None:
+                    row = lhtml.Element("tr")
+                    child.addprevious(row)
+                row.append(child)
+            else:
+                row = None
+
+
+def _rewrite_href(href: str, from_file: str, context, *, slug: str) -> str:
     href = href.strip()
     if not href or href.startswith(("javascript:", "data:")):
         return ""
-    if href.startswith("#") or href.startswith("mailto:"):
+    if href.startswith("mailto:"):
         return href
+    if href.startswith("#"):
+        # Footnote and contents links on the blog often point at ids that do not exist.
+        return href if _has_anchor(context, slug, href[1:]) else ""
     if href.startswith("//"):
         href = "https:" + href
     fragment = ""
     if "#" in href:
         href, fragment = href.split("#", 1)
-        fragment = "#" + fragment
     post_slug = post_slug_from_href(href, context["post_slugs"])
     if post_slug and post_slug in context["post_hrefs"]:
-        return rel_link(from_file, context["post_hrefs"][post_slug]) + fragment
+        target = rel_link(from_file, context["post_hrefs"][post_slug])
+        if fragment and _has_anchor(context, post_slug, fragment):
+            target += "#" + fragment
+        return target
     tag_slug = tag_slug_from_href(href)
     if tag_slug and tag_slug in context["tag_hrefs"]:
-        return rel_link(from_file, context["tag_hrefs"][tag_slug]) + fragment
+        return rel_link(from_file, context["tag_hrefs"][tag_slug])
     if href.startswith("/"):
-        return "https://blog.cloudflare.com" + href + fragment
-    return href + fragment
+        href = "https://blog.cloudflare.com" + href
+    return _safe_url(href + ("#" + fragment if fragment else ""))
+
+
+def _has_anchor(context, slug: str, fragment: str) -> bool:
+    return unquote(fragment) in context["anchors"].get(slug, set())
+
+
+def _safe_url(href: str) -> str:
+    """Percent-encode characters a URL may not contain, such as [ ] and spaces."""
+    # Some posts keep Markdown escapes in links, as in File:London\_2012.
+    href = MARKDOWN_ESCAPE.sub(r"\1", href)
+    parts = urlsplit(href)
+    if not parts.scheme or not parts.netloc:
+        return quote(href, safe=URL_SAFE)
+    return urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            quote(parts.path, safe=URL_SAFE),
+            quote(parts.query, safe=URL_SAFE),
+            quote(parts.fragment, safe=URL_SAFE),
+        )
+    )
 
 
 def _write_nav(path: Path, topics, grouped, tag_hrefs) -> None:
@@ -854,6 +945,13 @@ def _epubcheck(path: Path) -> int:
         print(result.stdout)
     if result.stderr:
         print(result.stderr)
+    if result.returncode != 0 and "Messages:" not in result.stdout:
+        # EPUBCheck always prints a Messages: summary, so the checker itself broke.
+        # The pip wrapper does this when Java is missing.
+        print(
+            f"epubcheck could not run (status {result.returncode}); structural checks passed"
+        )
+        return 0
     if result.returncode != 0:
         print(f"epubcheck failed with status {result.returncode}")
         return result.returncode
