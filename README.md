@@ -58,7 +58,7 @@ python sync.py
 python build.py
 ```
 
-`sync.py` reads the sitemap and, for each English post that is not already saved, downloads the HTML, parses it, writes JSON, and downloads the images in that post. Posts already on disk are not refreshed when `lastmod` changes. If their images are missing, the same run fills those in before fetching anything new.
+`sync.py` reads the sitemap and, for each English post that is not already saved, downloads the HTML, parses it, writes JSON, and downloads the images in that post. Posts already on disk stay as they are when `lastmod` changes, unless you pass `--updated`. If their images are missing, the same run fills those in before fetching anything new.
 
 `build.py` reads `data/` and does not use the network. It writes `cloudflare-blog-kindle.epub`.
 
@@ -81,16 +81,17 @@ python build.py
 
 `--limit` selects the N posts most recently updated in the sitemap. Until every English post is saved, tag pages count only downloaded posts, while the ten topic pages are still created. The cover states how many posts this edition includes and how many the site lists. After a complete sync, `python build.py` emits a page for every tag.
 
-### Refresh one post
+### Refresh changed posts
 
 Sync does not overwrite a post that is already saved. Compare the local copy with the sitemap, then re-download the posts you care about:
 
 ```bash
 python check.py
+python sync.py --updated
 python sync.py --slug origin-range-requests
 ```
 
-`check.py` prints each saved post whose `lastmod` differs, plus the `python sync.py --slug ...` command for it. Passing `--slug` without `--limit` refreshes only those posts. Repeat `--slug` for more than one.
+`check.py` prints each saved post whose `lastmod` differs. `--updated` downloads those posts again, and still fetches posts that are not saved yet. Images already on disk stay cached. Passing `--slug` without `--limit` refreshes only those posts. Repeat `--slug` for more than one.
 
 ```bash
 python sync.py --force

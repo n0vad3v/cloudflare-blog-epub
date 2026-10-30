@@ -34,6 +34,7 @@ def check_updates() -> int:
         return 0
     noun = "post has" if len(updated) == 1 else "posts have"
     print(f"{len(updated)} saved {noun} changed on the site")
+    print("  python sync.py --updated")
     for remote, slug, local in updated:
         print(slug)
         print(f"  local {local or 'unknown'}")

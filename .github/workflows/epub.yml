@@ -46,7 +46,7 @@ jobs:
       - name: Sync posts
         env:
           CONCURRENCY: ${{ inputs.concurrency || 4 }}
-        run: python sync.py --concurrency "$CONCURRENCY"
+        run: python sync.py --updated --concurrency "$CONCURRENCY"
 
       - name: Build Kindle EPUB
         run: python build.py --images kindle | tee build.log

@@ -33,6 +33,7 @@ def sync_posts(
     limit: int = 0,
     slugs: list[str] | None = None,
     force: bool = False,
+    updated: bool = False,
     concurrency: int = 4,
 ) -> int:
     slugs = slugs or []
@@ -40,7 +41,9 @@ def sync_posts(
         print("concurrency must be at least 1")
         return 2
     entries, tag_slugs = load_sitemaps()
-    to_fetch, already = _select(entries, limit=limit, slugs=slugs, force=force)
+    to_fetch, already = _select(
+        entries, limit=limit, slugs=slugs, force=force, updated=updated
+    )
     print(
         f"sitemap posts {len(entries)}, tags {len(tag_slugs)}, "
         f"saved {len(already)}, to fetch {len(to_fetch)}, concurrency {concurrency}"
@@ -137,12 +140,18 @@ def _url_entries(xml: str) -> list[tuple[str, str]]:
 
 
 def _select(
-    entries: list[PostEntry], *, limit: int, slugs: list[str], force: bool
+    entries: list[PostEntry],
+    *,
+    limit: int,
+    slugs: list[str],
+    force: bool,
+    updated: bool,
 ) -> tuple[list[PostEntry], list[PostEntry]]:
     """Return posts to download and posts already saved.
 
     Named slugs are always downloaded again. Without --limit, passing --slug
-    refreshes only those articles. lastmod is not used to decide.
+    refreshes only those articles. --updated also downloads a saved post when
+    its sitemap lastmod differs. --force downloads every selected post.
     """
     by_slug = {entry.slug: entry for entry in entries}
     explicit: list[PostEntry] = []
@@ -166,7 +175,7 @@ def _select(
         seen.add(entry.slug)
     if force:
         return [*explicit, *chosen], []
-    to_fetch = [entry for entry in chosen if _needs_fetch(entry)]
+    to_fetch = [entry for entry in chosen if _needs_fetch(entry, updated=updated)]
     already = [entry for entry in chosen if entry not in to_fetch]
     return [*explicit, *to_fetch], already
 
@@ -195,7 +204,7 @@ def _article_html(page: str) -> bool:
     return "article-content" in lowered and "<h1" in lowered
 
 
-def _needs_fetch(entry: PostEntry) -> bool:
+def _needs_fetch(entry: PostEntry, *, updated: bool = False) -> bool:
     raw_path = raw_dir() / f"{entry.slug}.html"
     json_path = posts_dir() / f"{entry.slug}.json"
     if not raw_path.is_file() or not json_path.is_file():
@@ -204,7 +213,11 @@ def _needs_fetch(entry: PostEntry) -> bool:
         saved = json.loads(json_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return True
-    return not isinstance(saved, dict) or saved.get("slug") != entry.slug
+    if not isinstance(saved, dict) or saved.get("slug") != entry.slug:
+        return True
+    if not updated or not entry.lastmod:
+        return False
+    return str(saved.get("lastmod") or "") != entry.lastmod
 
 
 async def _fetch_all(entries: list[PostEntry], concurrency: int) -> list[dict[str, str]]:
@@ -361,13 +374,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--slug", action="append", default=[], help="re-download this post and its images; repeatable. With no --limit, only these posts are fetched")
     parser.add_argument("--force", action="store_true", help="re-download every post selected for this run")
     parser.add_argument(
+        "--updated",
+        action="store_true",
+        help="also re-download saved posts whose sitemap lastmod differs",
+    )
+    parser.add_argument(
         "--concurrency",
         type=_positive_int,
         default=4,
         help="how many posts to download at once; image downloads share this limit",
     )
     args = parser.parse_args(argv)
-    return sync_posts(limit=args.limit, slugs=args.slug, force=args.force, concurrency=args.concurrency)
+    return sync_posts(
+        limit=args.limit,
+        slugs=args.slug,
+        force=args.force,
+        updated=args.updated,
+        concurrency=args.concurrency,
+    )
 
 
 def _positive_int(value: str) -> int:
