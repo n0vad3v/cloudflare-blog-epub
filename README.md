@@ -49,6 +49,8 @@ pip install -r requirements.txt
 
 Dependencies: `httpx`, `beautifulsoup4`, `lxml`, `pillow`, `tqdm`.
 
+[EPUBCheck](https://github.com/w3c/epubcheck) is optional. When an `epubcheck` command is on your PATH, `build.py` runs it on the finished book; otherwise it runs only its own structural checks. On macOS, install it with `brew install epubcheck`. On Debian or Ubuntu, use `apt install epubcheck`. The `epubcheck` package on PyPI is a wrapper that also needs Java installed separately; without Java it cannot run.
+
 ## Usage
 
 Run the commands from this repository. Cached files and the finished EPUB are written next to the scripts.
