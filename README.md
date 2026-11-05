@@ -49,6 +49,8 @@ pip install -r requirements.txt
 
 Dependencies: `httpx`, `beautifulsoup4`, `lxml`, `pillow`, `tqdm`.
 
+[EPUBCheck](https://github.com/w3c/epubcheck) is optional. When an `epubcheck` command is on your PATH, `build.py` runs it on the finished book; otherwise it runs only its own structural checks. On macOS, install it with `brew install epubcheck`. On Debian or Ubuntu, use `apt install epubcheck`. The `epubcheck` package on PyPI is a wrapper that also needs Java installed separately; without Java it cannot run.
+
 ## Usage
 
 Run the commands from this repository. Cached files and the finished EPUB are written next to the scripts.
@@ -79,7 +81,9 @@ python sync.py --limit 20
 python build.py
 ```
 
-`--limit` selects the N posts most recently updated in the sitemap. Until every English post is saved, tag pages count only downloaded posts, while the ten topic pages are still created. The cover states how many posts this edition includes and how many the site lists. After a complete sync, `python build.py` emits a page for every tag.
+`--limit` selects the N posts most recently updated in the sitemap, then skips the ones already saved. It is a window, not a count of new downloads: running `python sync.py --limit 20` twice fetches nothing the second time. Raise the number to grow the book, for example `--limit 100`. `--limit 0`, the default, means every post that is not saved yet.
+
+Until every English post is saved, tag pages count only downloaded posts, while the ten topic pages are still created. The cover states how many posts this edition includes and how many the site lists. After a complete sync, `python build.py` emits a page for every tag.
 
 ### Refresh changed posts
 
@@ -132,6 +136,41 @@ wrote /home/path/to/cloudflare-blog-epub/cloudflare-blog-kindle.epub (508622478 
 ```
 
 AZW3 (Kindle Format 8) accepts JPEG, PNG, GIF, BMP, and SVG. It does not accept WebP or AVIF, and it does not keep animation or transparency. Copy the EPUB to the device with Calibre’s AZW3 conversion rather than embedding those formats here.
+
+### Different Kindle screens
+
+The EPUB is reflowable. It sets no page size, and the stylesheet uses `em` and percentages, so each reader lays out the text for its own screen and applies its own font, size, and margin settings. Images use `max-width: 100%` and shrink to fit.
+
+Images are the only part that changes per device. A larger `--image-edge` is sharper on a high-resolution or large screen and makes the file bigger. A smaller one suits older or lower-resolution readers. Sync already stores images at no more than 1400 pixels on the long edge, so an edge above 1400 adds no detail. Some starting points:
+
+| Reader                                 | Build                                                            |
+| -------------------------------------- | ---------------------------------------------------------------- |
+| Older or lower-resolution 6" Kindle    | `python build.py --images kindle --image-edge 800 --image-quality 60` |
+| Current 300 ppi Kindle                 | `python build.py --images kindle`                                |
+| Large-screen Kindle, such as Scribe    | `python build.py --images kindle --image-edge 1400 --image-quality 75` |
+
+One sync can feed several books. Each edge and quality pair has its own cache directory, so give each build its own `--output`:
+
+```bash
+python build.py --images kindle --image-edge 800 --output cloudflare-blog-small.epub
+python build.py --images kindle --image-edge 1400 --image-quality 75 --output cloudflare-blog-large.epub
+```
+
+### Start over
+
+The scripts never delete what sync saved. Everything lives under `data/`, the build tree under `build/`, and the books in `*.epub`, all gitignored. To begin again from an empty cache:
+
+```bash
+rm -rf data build *.epub
+```
+
+To clear only the Kindle-sized image copies, remove `data/images-kindle/`. `--force` downloads posts again but does not remove anything.
+
+## Weekly release
+
+`.github/workflows/epub.yml` runs every Monday at 02:00 UTC and can be started by hand from the Actions tab. It runs `python sync.py --updated`, then `python build.py --images kindle`, and publishes `cloudflare-blog-kindle.epub` with a `SHA256SUMS` file to a release tagged `epub-YYYY-MM-DD`. A second run on the same day replaces that release's files.
+
+A manual run takes one input, `concurrency`, which defaults to 4. It has no input for `--limit` or the image options. Edit the `Sync posts` and `Build Kindle EPUB` steps to change them.
 
 ## Inside the book
 
@@ -186,6 +225,7 @@ These paths are gitignored.
 - The full book, with images, is large.(~3 GB) Use `python build.py --limit` or `--images kindle` when a reader cannot open it. A Kindle still does best with smaller volumes; one file of several thousand chapters is heavy even after JPEG compression.
 - Video and embedded pages become links to the original URL.
 - Code blocks keep their text and drop the site’s highlighting scripts.
+- The stylesheet and the 1600×2560 cover are fixed in `build.py`. There are no options for fonts, code size, or fixed layout.
 
 ## AI involvement
 
