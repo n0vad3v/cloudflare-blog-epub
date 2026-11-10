@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import posixpath
+import re
 import zipfile
 from pathlib import Path
 from urllib.parse import unquote
@@ -38,6 +39,25 @@ def pack(book_dir: Path, dest: Path) -> None:
         files = [path for path in book_dir.rglob("*") if path.is_file() and path.name != "mimetype"]
         for path in tqdm(sorted(files), desc="pack", unit="file", disable=None):
             archive.write(path, path.relative_to(book_dir).as_posix())
+
+
+_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+
+
+def _external_href(href: str) -> bool:
+    """True when a link leaves the book, including tel: and other non-HTTP schemes.
+
+    http:/some-post is missing a slash, so it stays an internal link until repaired.
+    """
+    if href.startswith("#"):
+        return True
+    match = _SCHEME.match(href)
+    if match is None:
+        return False
+    scheme = match.group(0)[:-1].lower()
+    if scheme in {"http", "https"}:
+        return href.lower().startswith(("http://", "https://"))
+    return True
 
 
 def validate_epub(path: Path) -> list[str]:
@@ -102,7 +122,7 @@ def validate_epub(path: Path) -> list[str]:
             for href in document.xpath(
                 "//*[local-name()='a']/@href | //*[local-name()='img']/@src | //*[local-name()='link']/@href"
             ):
-                if not href or href.startswith(("http://", "https://", "mailto:", "data:", "#")):
+                if not href or _external_href(href):
                     continue
                 target = unquote(href.split("#", 1)[0])
                 if not target:

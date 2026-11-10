@@ -678,7 +678,7 @@ def _rewrite_href(href: str, from_file: str, context, *, slug: str) -> str:
     href = href.strip()
     if not href or href.startswith(("javascript:", "data:")):
         return ""
-    if href.startswith("mailto:"):
+    if href.startswith(("mailto:", "tel:")):
         return href
     if href.startswith("#"):
         # Footnote and contents links on the blog often point at ids that do not exist.
@@ -688,6 +688,7 @@ def _rewrite_href(href: str, from_file: str, context, *, slug: str) -> str:
     fragment = ""
     if "#" in href:
         href, fragment = href.split("#", 1)
+    href = _repair_scheme_path(href)
     post_slug = post_slug_from_href(href, context["post_slugs"])
     if post_slug and post_slug in context["post_hrefs"]:
         target = rel_link(from_file, context["post_hrefs"][post_slug])
@@ -700,6 +701,32 @@ def _rewrite_href(href: str, from_file: str, context, *, slug: str) -> str:
     if href.startswith("/"):
         href = "https://blog.cloudflare.com" + href
     return _safe_url(href + ("#" + fragment if fragment else ""))
+
+
+def _repair_scheme_path(href: str) -> str:
+    """Repair http:/some-post, which omits a slash and the host.
+
+    A dotted first segment is a host with a missing slash, so http:/example.com/a
+    becomes http://example.com/a. Anything else is a path on this blog.
+    """
+    try:
+        parts = urlsplit(href)
+    except ValueError:
+        return href
+    if parts.scheme not in {"http", "https"} or parts.netloc or not parts.path:
+        return href
+    path = parts.path.lstrip("/")
+    head, separator, rest = path.partition("/")
+    if not head:
+        return href
+    if "." in head:
+        return urlunsplit(
+            (parts.scheme, head, f"/{rest}" if separator else "", parts.query, "")
+        )
+    relative = "/" + path
+    if parts.query:
+        relative += "?" + parts.query
+    return relative
 
 
 def _has_anchor(context, slug: str, fragment: str) -> bool:
