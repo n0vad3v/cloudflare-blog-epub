@@ -709,8 +709,13 @@ def _has_anchor(context, slug: str, fragment: str) -> bool:
 def _safe_url(href: str) -> str:
     """Percent-encode characters a URL may not contain, such as [ ] and spaces."""
     # Some posts keep Markdown escapes in links, as in File:London\_2012.
+    # Phishing writeups defang hosts the same way, as in evil\[.\]example.
+    # Unescaping those brackets leaves a host urlsplit rejects as IPv6.
     href = MARKDOWN_ESCAPE.sub(r"\1", href)
-    parts = urlsplit(href)
+    try:
+        parts = urlsplit(href)
+    except ValueError:
+        return quote(href, safe=URL_SAFE + "#")
     if not parts.scheme or not parts.netloc:
         return quote(href, safe=URL_SAFE)
     return urlunsplit(

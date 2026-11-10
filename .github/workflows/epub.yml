@@ -49,7 +49,9 @@ jobs:
         run: python sync.py --updated --concurrency "$CONCURRENCY"
 
       - name: Build Kindle EPUB
-        run: python build.py --images kindle | tee build.log
+        run: |
+          set -o pipefail
+          python build.py --images kindle | tee build.log
 
       - name: Publish release
         env:
